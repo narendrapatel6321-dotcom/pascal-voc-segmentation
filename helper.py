@@ -99,32 +99,16 @@ from PIL import Image
 from tqdm import tqdm
 import scipy.io
 
-def prepare_voc(tar_path, extract_dir) -> None:
-    tar_path    = Path(tar_path)
-    extract_dir = Path(extract_dir)
-    sentinel    = extract_dir / ".extracted"
-
-    if sentinel.exists():
-        print(" VOC already extracted, skipping.")
-        return
-
-    if extract_dir.exists():
-        print(" Partial extraction detected — cleaning up.")
-        shutil.rmtree(extract_dir)
-
-    print(" Extracting VOC...")
-    with tarfile.open(tar_path, "r") as tar:
-        tar.extractall(extract_dir.parent)
-    sentinel.touch()
-
-    seg_dir = extract_dir / "VOC2012" / "ImageSets" / "Segmentation"
+def prepare_voc(voc_dir) -> None:
+    voc_dir = Path(voc_dir)
+    seg_dir = voc_dir / "VOC2012" / "ImageSets" / "Segmentation"
     for fname in ["train.txt", "val.txt", "trainval.txt"]:
         if not (seg_dir / fname).exists():
             raise FileNotFoundError(
                 f"VOC segmentation split file missing: {seg_dir / fname}\n"
                 f"The archive may be corrupted."
             )
-    print(f" VOC ready at {extract_dir}")
+    print(f" VOC verified at {voc_dir}")
 
 def prepare_sbd(tar_path, extract_dir) -> None:
     tar_path    = Path(tar_path)
