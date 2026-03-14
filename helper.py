@@ -69,8 +69,8 @@ Usage
     from helper import download_and_prepare_voc, download_and_prepare_sbd
     from helper import build_aug_split, load_saved_splits, make_tf_dataset
 
-    download_and_prepare_voc(DATA_DIR)
-    download_and_prepare_sbd(DATA_DIR)
+    prepare_voc(DATA_DIR)
+    prepare_sbd(DATA_DIR)
     build_aug_split(
         voc_dir = DATA_DIR / "VOCdevkit",
         sbd_dir = DATA_DIR / "benchmark_RELEASE" / "dataset",
@@ -90,7 +90,6 @@ Usage
 
 
 from pathlib import Path
-import urllib.request
 import tarfile
 import shutil
 import numpy as np
@@ -101,152 +100,72 @@ from PIL import Image
 from tqdm import tqdm
 import scipy.io
 
-VOC_URL = "http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCtrainval_11-May-2012.tar"
+
 VOC_TAR = "VOCtrainval_11-May-2012.tar"
 VOC_DIR = "VOCdevkit"
 
-def download_and_prepare_voc(data_dir) -> None:
-    """
-    Download PASCAL VOC 2012 and save to data_dir on Drive.
+def prepare_voc(tar_path, extract_dir) -> None:
+    tar_path    = Path(tar_path)
+    extract_dir = Path(extract_dir)
+    sentinel    = extract_dir / ".extracted"
 
-    Run once. Saves the raw tar and extracted VOCdevkit folder to Drive.
-    Every training session copies the tar to /content/ and extracts locally.
-
-    Files saved to data_dir:
-        VOCtrainval_11-May-2012.tar   — kept on Drive permanently
-        VOCdevkit/                    — extracted dataset
-        VOCdevkit/.extracted          — sentinel file, marks clean extraction
-
-    Parameters
-    ----------
-    data_dir : str or Path
-        Directory on Google Drive where VOC files will be saved.
-
-    Returns
-    -------
-    None
-
-    Example
-    -------
-    >>> download_and_prepare_voc(DATA_DIR)
-    """
-    data_dir = Path(data_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    tar_path      = data_dir / VOC_TAR
-    extract_dir   = data_dir / VOC_DIR
-    sentinel      = extract_dir / ".extracted"
-
-    # ── Download ──────────────────────────────────────────────
-    if tar_path.exists():
-        print(" VOC archive already on Drive, skipping download.")
-    else:
-        print(" Downloading PASCAL VOC 2012 (~2GB)... this will take a few minutes.")
-        urllib.request.urlretrieve(VOC_URL, tar_path)
-        print(" Download complete.")
-
-    # ── Extract ───────────────────────────────────────────────
     if sentinel.exists():
-        print(" VOC already extracted on Drive, skipping extraction.")
-    else:
-        if extract_dir.exists():
-            print(" Partial extraction detected — cleaning up before re-extracting.")
-            shutil.rmtree(extract_dir)
-        print(" Extracting VOC archive to Drive...")
-        with tarfile.open(tar_path, "r") as tar:
-            tar.extractall(data_dir)
-        sentinel.touch()
-        print(" Extraction complete.")
+        print(" VOC already extracted, skipping.")
+        return
 
-    # ── Verify ────────────────────────────────────────────────
+    if extract_dir.exists():
+        print(" Partial extraction detected — cleaning up.")
+        shutil.rmtree(extract_dir)
+
+    print(" Extracting VOC...")
+    with tarfile.open(tar_path, "r") as tar:
+        tar.extractall(extract_dir.parent)
+    sentinel.touch()
+
     seg_dir = extract_dir / "VOC2012" / "ImageSets" / "Segmentation"
     for fname in ["train.txt", "val.txt", "trainval.txt"]:
         if not (seg_dir / fname).exists():
             raise FileNotFoundError(
                 f"VOC segmentation split file missing: {seg_dir / fname}\n"
-                f"The archive may be corrupted. Delete {tar_path} and re-run."
+                f"The archive may be corrupted."
             )
+    print(f" VOC ready at {extract_dir}")
 
-    print(f" VOC 2012 ready at {extract_dir}")
 
-
-SBD_URL = "http://www.eecs.berkeley.edu/Research/Projects/CS/vision/grouping/semantic_contours/benchmark.tgz"
 SBD_TAR = "benchmark.tgz"
 SBD_DIR = "benchmark_RELEASE"
 
-def download_and_prepare_sbd(data_dir) -> None:
-    """
-    Download Semantic Boundaries Dataset (SBD) and save to data_dir on Drive.
-
-    Run once. Saves the raw tar and extracted benchmark_RELEASE folder to Drive.
-    Every training session copies the tar to /content/ and extracts locally.
-
-    SBD masks are stored as .mat files under dataset/cls/ — each file contains
-    a MATLAB struct with a 'GTcls' field holding the segmentation mask as a
-    sparse matrix. build_aug_split() handles decoding these.
-
-    Files saved to data_dir:
-        benchmark.tgz               — kept on Drive permanently
-        benchmark_RELEASE/          — extracted dataset
-        benchmark_RELEASE/.extracted — sentinel file, marks clean extraction
-
-    Parameters
-    ----------
-    data_dir : str or Path
-        Directory on Google Drive where SBD files will be saved.
-
-    Returns
-    -------
-    None
-
-    Example
-    -------
-    >>> download_and_prepare_sbd(DATA_DIR)
-    """
-    data_dir = Path(data_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    tar_path    = data_dir / SBD_TAR
-    extract_dir = data_dir / SBD_DIR
+def prepare_sbd(tar_path, extract_dir) -> None:
+    tar_path    = Path(tar_path)
+    extract_dir = Path(extract_dir)
     sentinel    = extract_dir / ".extracted"
 
-    # ── Download ──────────────────────────────────────────────
-    if tar_path.exists():
-        print(" SBD archive already on Drive, skipping download.")
-    else:
-        print(" Downloading SBD (~1.4GB)... this will take a few minutes.")
-        urllib.request.urlretrieve(SBD_URL, tar_path)
-        print(" Download complete.")
-
-    # ── Extract ───────────────────────────────────────────────
     if sentinel.exists():
-        print(" SBD already extracted on Drive, skipping extraction.")
-    else:
-        if extract_dir.exists():
-            print(" Partial extraction detected — cleaning up before re-extracting.")
-            shutil.rmtree(extract_dir)
-        print(" Extracting SBD archive to Drive...")
-        with tarfile.open(tar_path, "r:gz") as tar:
-            tar.extractall(data_dir)
-        sentinel.touch()
-        print(" Extraction complete.")
+        print(" SBD already extracted, skipping.")
+        return
 
-    # ── Verify ────────────────────────────────────────────────
+    if extract_dir.exists():
+        print(" Partial extraction detected — cleaning up.")
+        shutil.rmtree(extract_dir)
+
+    print(" Extracting SBD...")
+    with tarfile.open(tar_path, "r:gz") as tar:
+        tar.extractall(extract_dir.parent)
+    sentinel.touch()
+
     dataset_dir = extract_dir / "dataset"
     for subdir in ["img", "cls"]:
         if not (dataset_dir / subdir).exists():
             raise FileNotFoundError(
                 f"SBD dataset subdirectory missing: {dataset_dir / subdir}\n"
-                f"The archive may be corrupted. Delete {tar_path} and re-run."
+                f"The archive may be corrupted."
             )
-
-    for split_file in ["train.txt", "val.txt"]:
-        if not (dataset_dir / split_file).exists():
+    for fname in ["train.txt", "val.txt"]:
+        if not (dataset_dir / fname).exists():
             raise FileNotFoundError(
-                f"SBD split file missing: {dataset_dir / split_file}\n"
-                f"The archive may be corrupted. Delete {tar_path} and re-run."
+                f"SBD split file missing: {dataset_dir / fname}\n"
+                f"The archive may be corrupted."
             )
-
     print(f" SBD ready at {extract_dir}")
 
 SEED = 21
