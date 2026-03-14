@@ -8,8 +8,8 @@ semantic segmentation project (U-Net vs DeepLabV3+).
 Sections
 --------
 1. Dataset Preparation
-    download_and_prepare_voc()   — download VOC 2012 tarball to Drive
-    download_and_prepare_sbd()   — download SBD tarball to Drive
+    prepare_voc()                — extract VOC 2012 tarball to local disk
+    prepare_sbd()                — extract SBD tarball to local disk
     build_aug_split()            — build standard aug split CSVs (train/val/test)
     load_saved_splits()          — load CSVs and remap paths to local disk
 
@@ -66,7 +66,7 @@ directly from Drive — for maximum pipeline throughput.
 Usage
 -----
     # One-time setup (run once — results saved to shared Drive folder)
-    from helper import download_and_prepare_voc, download_and_prepare_sbd
+    from helper import prepare_voc, prepare_sbd
     from helper import build_aug_split, load_saved_splits, make_tf_dataset
 
     prepare_voc(DATA_DIR)
@@ -88,7 +88,6 @@ Usage
     test_ds  = make_tf_dataset(test_df,  split="test",  img_size=512, batch_size=8)
 """
 
-
 from pathlib import Path
 import tarfile
 import shutil
@@ -99,10 +98,6 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from tqdm import tqdm
 import scipy.io
-
-
-VOC_TAR = "VOCtrainval_11-May-2012.tar"
-VOC_DIR = "VOCdevkit"
 
 def prepare_voc(tar_path, extract_dir) -> None:
     tar_path    = Path(tar_path)
@@ -130,10 +125,6 @@ def prepare_voc(tar_path, extract_dir) -> None:
                 f"The archive may be corrupted."
             )
     print(f" VOC ready at {extract_dir}")
-
-
-SBD_TAR = "benchmark.tgz"
-SBD_DIR = "benchmark_RELEASE"
 
 def prepare_sbd(tar_path, extract_dir) -> None:
     tar_path    = Path(tar_path)
