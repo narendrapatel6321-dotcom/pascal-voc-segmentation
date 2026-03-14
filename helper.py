@@ -8,7 +8,6 @@ semantic segmentation project (U-Net vs DeepLabV3+).
 Sections
 --------
 1. Dataset Preparation
-    prepare_voc()                — extract VOC 2012 tarball to local disk
     prepare_sbd()                — extract SBD tarball to local disk
     build_aug_split()            — build standard aug split CSVs (train/val/test)
     load_saved_splits()          — load CSVs and remap paths to local disk
@@ -66,10 +65,9 @@ directly from Drive — for maximum pipeline throughput.
 Usage
 -----
     # One-time setup (run once — results saved to shared Drive folder)
-    from helper import prepare_voc, prepare_sbd
+    from helper import prepare_sbd
     from helper import build_aug_split, load_saved_splits, make_tf_dataset
 
-    prepare_voc(DATA_DIR)
     prepare_sbd(DATA_DIR)
     build_aug_split(
         voc_dir = DATA_DIR / "VOCdevkit",
@@ -98,17 +96,6 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from tqdm import tqdm
 import scipy.io
-
-def prepare_voc(voc_dir) -> None:
-    voc_dir = Path(voc_dir)
-    seg_dir = voc_dir / "VOC2012" / "ImageSets" / "Segmentation"
-    for fname in ["train.txt", "val.txt", "trainval.txt"]:
-        if not (seg_dir / fname).exists():
-            raise FileNotFoundError(
-                f"VOC segmentation split file missing: {seg_dir / fname}\n"
-                f"The archive may be corrupted."
-            )
-    print(f" VOC verified at {voc_dir}")
 
 def prepare_sbd(tar_path, extract_dir) -> None:
     tar_path    = Path(tar_path)
