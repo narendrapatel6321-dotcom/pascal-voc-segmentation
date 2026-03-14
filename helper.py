@@ -168,7 +168,7 @@ def _convert_sbd_mat_to_png(sbd_msk_dir, png_dir) -> None:
         if png_path.exists():
             continue
         mat  = scipy.io.loadmat(str(mat_path))
-        mask = mat["GTcls"][0, 0][1].toarray().astype(np.uint8)
+        mask = mat["GTcls"][0, 0][1].astype(np.uint8)
         Image.fromarray(mask).save(png_path)
 
     print(f" Conversion complete — {len(mat_files):,} PNGs saved to {png_dir}")
