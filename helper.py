@@ -579,10 +579,15 @@ class CombinedLoss(tf.keras.losses.Loss):
         )
 
     def call(self, y_true, y_pred):
-        y_true = tf.cast(y_true, tf.int32)
+        y_true    = tf.cast(y_true, tf.int32)
         ce_loss   = self._ce(y_true, y_pred)
         dice_loss = self._dice(y_true, y_pred)
-        return self.ce_weight * ce_loss + (1.0 - self.ce_weight) * dice_loss
+    
+        # Guard against NaN
+        ce_loss   = tf.where(tf.math.is_nan(ce_loss),   tf.zeros_like(ce_loss),   ce_loss)
+        dice_loss = tf.where(tf.math.is_nan(dice_loss), tf.zeros_like(dice_loss), dice_loss)
+    
+    return self.ce_weight * ce_loss + (1.0 - self.ce_weight) * dice_loss
 
     def get_config(self):
         config = super().get_config()
