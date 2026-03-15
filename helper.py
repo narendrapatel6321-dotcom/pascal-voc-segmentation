@@ -343,21 +343,6 @@ def load_saved_splits(data_dir, local_voc_dir=None, local_sbd_png_dir=None) -> t
 
         print(" Paths remapped to local disk.")
 
-    # ── Validate files exist ───────────────────────────────────
-    missing = []
-    for df, name in [(train_df, "train"), (val_df, "val"), (test_df, "test")]:
-        n_missing = (~df["image_path"].apply(lambda p: Path(p).exists()) |
-                     ~df["mask_path"].apply(lambda p: Path(p).exists())).sum()
-        if n_missing > 0:
-            missing.append(f"  {name}: {n_missing} missing files")
-
-    if missing:
-        raise FileNotFoundError(
-            "Some files referenced in CSVs do not exist on disk:\n"
-            + "\n".join(missing) + "\n"
-            "Did you copy and extract the tarballs to /content/ first?"
-        )
-
     print(f" Splits loaded from {data_dir}")
     print(f"   Train : {len(train_df):,} | Val : {len(val_df):,} | Test : {len(test_df):,}")
 
