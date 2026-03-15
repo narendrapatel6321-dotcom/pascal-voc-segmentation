@@ -283,7 +283,7 @@ def build_aug_split(voc_dir, sbd_dir, out_dir) -> None:
     print(f"   Val   : {len(val_rows):,} images (VOC 2012 val 70%)")
     print(f"   Test  : {len(test_rows):,} images (VOC 2012 val 30%)")
 
-def load_saved_splits(data_dir, local_voc_dir=None, local_sbd_png_dir=None) -> tuple:
+def load_saved_splits(data_dir, local_voc_dir=None, local_sbd_png_dir=None, local_sbd_dir=None)
     """
     Load pre-built train/val/test CSV manifests from Drive.
 
@@ -292,6 +292,7 @@ def load_saved_splits(data_dir, local_voc_dir=None, local_sbd_png_dir=None) -> t
     data_dir         : str or Path — directory containing train.csv, val.csv, test.csv
     local_voc_dir    : str or Path, optional — local path to VOCdevkit/VOC2012/
     local_sbd_png_dir: str or Path, optional — local path to sbd_masks_png/
+    local_sdb_dir: PLACE_HOLDER
 
     Returns
     -------
@@ -331,10 +332,8 @@ def load_saved_splits(data_dir, local_voc_dir=None, local_sbd_png_dir=None) -> t
                 return str(voc_img_local / p.name)
             if "SegmentationClass" in p_str and voc_msk_local:
                 return str(voc_msk_local / p.name)
-            if Path(p).parent.name == "img" and local_sbd_png_dir:
-                # SBD image — lives in benchmark_RELEASE/dataset/img/
-                local_sbd_img = local_sbd_png_dir.parent / "img"
-                return str(local_sbd_img / p.name)
+            if Path(p).parent.name == "img" and local_sbd_dir:
+                return str(Path(local_sbd_dir) / "img" / Path(p).name)
             return p_str  # fallback to original if no remapping rule applies
 
         for df in [train_df, val_df, test_df]:
