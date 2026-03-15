@@ -511,7 +511,7 @@ class DiceLoss(tf.keras.losses.Loss):
     def call(self, y_true, y_pred):
         # y_true : (B, H, W)    int32  class indices, 255 = void
         # y_pred : (B, H, W, C) float32 logits
-
+        y_true = tf.cast(y_true, tf.int32)
         # Valid pixel mask — exclude void
         valid = tf.cast(tf.not_equal(y_true, VOID_LABEL), tf.float32)  # (B, H, W)
 
@@ -579,6 +579,7 @@ class CombinedLoss(tf.keras.losses.Loss):
         )
 
     def call(self, y_true, y_pred):
+        y_true = tf.cast(y_true, tf.int32)
         ce_loss   = self._ce(y_true, y_pred)
         dice_loss = self._dice(y_true, y_pred)
         return self.ce_weight * ce_loss + (1.0 - self.ce_weight) * dice_loss
@@ -619,6 +620,7 @@ class PixelAccuracy(tf.keras.metrics.Metric):
     def update_state(self, y_true, y_pred, sample_weight=None):
         # y_true : (B, H, W)    int32
         # y_pred : (B, H, W, C) float32 logits
+        y_true = tf.cast(y_true, tf.int32)
         pred  = tf.argmax(y_pred, axis=-1, output_type=tf.int32)  # (B, H, W)
         valid = tf.not_equal(y_true, VOID_LABEL)                   # (B, H, W)
 
@@ -667,6 +669,7 @@ class MeanIoU(tf.keras.metrics.Metric):
         )
 
     def update_state(self, y_true, y_pred, sample_weight=None):
+        y_true = tf.cast(y_true, tf.int32)
         pred  = tf.argmax(y_pred, axis=-1, output_type=tf.int32)  # (B, H, W)
         valid = tf.not_equal(y_true, VOID_LABEL)                   # (B, H, W)
 
@@ -735,6 +738,7 @@ class MeanDice(tf.keras.metrics.Metric):
         )
 
     def update_state(self, y_true, y_pred, sample_weight=None):
+        y_true = tf.cast(y_true, tf.int32)
         pred  = tf.argmax(y_pred, axis=-1, output_type=tf.int32)
         valid = tf.not_equal(y_true, VOID_LABEL)
 
