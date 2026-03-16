@@ -587,7 +587,7 @@ class CombinedLoss(tf.keras.losses.Loss):
         ce_loss   = tf.where(tf.math.is_nan(ce_loss),   tf.zeros_like(ce_loss),   ce_loss)
         dice_loss = tf.where(tf.math.is_nan(dice_loss), tf.zeros_like(dice_loss), dice_loss)
     
-    return self.ce_weight * ce_loss + (1.0 - self.ce_weight) * dice_loss
+        return self.ce_weight * ce_loss + (1.0 - self.ce_weight) * dice_loss
 
     def get_config(self):
         config = super().get_config()
