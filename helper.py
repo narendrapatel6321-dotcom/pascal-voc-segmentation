@@ -7,6 +7,9 @@ semantic segmentation project (U-Net vs DeepLabV3+).
 
 Sections
 --------
+0. Session Setup
+    setup_data()                 — one-call Kaggle download + extract + split + remap
+    
 1. Dataset Preparation
     prepare_sbd()                — extract SBD tarball to local disk
     build_aug_split()            — build standard aug split CSVs (train/val/test)
@@ -64,9 +67,16 @@ directly from Drive — for maximum pipeline throughput.
 
 Usage
 -----
-    # One-time setup (run once — results saved to shared Drive folder)
-    from helper import prepare_sbd
-    from helper import build_aug_split, load_saved_splits, make_tf_dataset
+    # Every session — one call handles everything
+    from helper import setup_data, make_tf_dataset
+
+    train_df, val_df, test_df = setup_data(CKPT_ROOT, PROJECT)
+    train_ds = make_tf_dataset(train_df, split="train", img_size=512, batch_size=8)
+    val_ds   = make_tf_dataset(val_df,   split="val",   img_size=512, batch_size=8)
+    test_ds  = make_tf_dataset(test_df,  split="test",  img_size=512, batch_size=8)
+
+    # Fine-grained control (advanced / one-time setup only)
+    from helper import prepare_sbd, build_aug_split, load_saved_splits
 
     prepare_sbd(DATA_DIR)
     build_aug_split(
@@ -74,21 +84,19 @@ Usage
         sbd_dir = DATA_DIR / "benchmark_RELEASE" / "dataset",
         out_dir = DATA_DIR
     )
-
-    # Every training session
     train_df, val_df, test_df = load_saved_splits(
         data_dir          = DATA_DIR,
         local_voc_dir     = Path("/content/VOCdevkit/VOC2012"),
         local_sbd_png_dir = Path("/content/sbd_masks_png")
     )
-    train_ds = make_tf_dataset(train_df, split="train", img_size=512, batch_size=8)
-    val_ds   = make_tf_dataset(val_df,   split="val",   img_size=512, batch_size=8)
-    test_ds  = make_tf_dataset(test_df,  split="test",  img_size=512, batch_size=8)
 """
 
 from pathlib import Path
+import os
 import tarfile
 import shutil
+import zipfile
+import subprocess
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -96,6 +104,106 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from tqdm import tqdm
 import scipy.io
+
+
+def setup_data(
+    ckpt_root,
+    project,
+    local_dir      = Path("/content/voc_seg_data"),
+    kaggle_dataset = "narendraiitb27/voc-sdb-raw",
+) -> tuple:
+    """
+    One-call data setup for every Colab session.
+
+    Handles Kaggle auth, download (guarded), SBD extraction (guarded),
+    mask conversion (guarded), split building (guarded), and path remapping.
+    Safe to re-run every session — all expensive steps are skipped if already done.
+
+    First ever run        : download + extract + convert masks + build splits (~20 min)
+    Every session after   : skips everything except path remapping (~5 sec)
+
+    Parameters
+    ----------
+    ckpt_root      : str or Path — root of shared Drive folder (from find_checkpoint_root)
+    project        : str         — project name, e.g. "pascal_voc_segmentation"
+    local_dir      : Path        — local SSD directory for extracted data
+                                   (default: /content/voc_seg_data)
+    kaggle_dataset : str         — Kaggle dataset slug
+
+    Returns
+    -------
+    tuple : (train_df, val_df, test_df)
+
+    Example
+    -------
+    >>> train_df, val_df, test_df = setup_data(CKPT_ROOT, PROJECT)
+    """
+    ckpt_root  = Path(ckpt_root)
+    local_dir  = Path(local_dir)
+    data_dir   = ckpt_root / project / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    local_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Kaggle auth ───────────────────────────────────────────
+    kaggle_json = ckpt_root / "kaggle.json"
+    if not kaggle_json.exists():
+        raise FileNotFoundError(
+            f"kaggle.json not found at {kaggle_json}\n"
+            f"Upload kaggle.json to {ckpt_root} on Drive once."
+        )
+    os.makedirs("/root/.kaggle", exist_ok=True)
+    shutil.copy2(kaggle_json, "/root/.kaggle/kaggle.json")
+    os.chmod("/root/.kaggle/kaggle.json", 0o600)
+    print(" Kaggle authenticated.")
+
+    # ── Local path constants ──────────────────────────────────
+    voc_extracted  = local_dir / "VOCtrainval_11-May-2012"
+    sbd_extracted  = local_dir / "benchmark_RELEASE"
+    sbd_png_dir    = local_dir / "sbd_masks_png" / "sbd_masks_png"
+    local_voc_dir  = voc_extracted / "VOCdevkit" / "VOC2012"
+    local_sbd_dir  = sbd_extracted / "dataset"
+
+    # ── Download from Kaggle (guarded) ────────────────────────
+    if not voc_extracted.exists() or not sbd_extracted.exists() or not sbd_png_dir.exists():
+        print(" Downloading dataset from Kaggle...")
+        result = subprocess.run(
+            ["kaggle", "datasets", "download", kaggle_dataset, "-p", str(local_dir)],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Kaggle download failed:\n{result.stderr}")
+
+        zip_path = local_dir / "voc-sdb-raw.zip"
+        print(" Extracting zip...")
+        with zipfile.ZipFile(zip_path, "r") as z:
+            z.extractall(local_dir)
+        zip_path.unlink()
+        print(" Download and extraction complete.")
+    else:
+        print(" Dataset already on local disk, skipping download.")
+
+    # ── Extract SBD tarball (guarded inside prepare_sbd) ─────
+    sbd_tar = local_dir / "benchmark.tgz"
+    prepare_sbd(tar_path=sbd_tar, extract_dir=sbd_extracted)
+    if sbd_tar.exists():
+        sbd_tar.unlink()
+
+    # ── Convert masks + build splits (guarded inside build_aug_split) ──
+    build_aug_split(
+        voc_dir = local_voc_dir.parent.parent,   # → VOCdevkit/
+        sbd_dir = local_sbd_dir,
+        out_dir = data_dir,
+    )
+
+    # ── Load splits and remap paths to local SSD ─────────────
+    train_df, val_df, test_df = load_saved_splits(
+        data_dir          = data_dir,
+        local_voc_dir     = local_voc_dir,
+        local_sbd_png_dir = sbd_png_dir,
+        local_sbd_dir     = local_sbd_dir,
+    )
+
+    return train_df, val_df, test_df
 
 def prepare_sbd(tar_path, extract_dir) -> None:
     tar_path    = Path(tar_path)
