@@ -526,59 +526,36 @@ def _normalize(img, mask):
     mask = tf.squeeze(mask, axis=-1)
     return img, mask
 
-
 def prewarm_cache(
     train_df,
     val_df,
     cache_dir,
     img_size = 512,
 ) -> None:
-    """
-    Pre-warm the tf.data disk cache for train and val splits.
-
-    Iterates load → resize → cache for each split WITHOUT augmentation or
-    normalization — those run cheaply every epoch after the cache is warm.
-    Safe to re-run: TF reuses existing cache files if already present.
-
-    Must be called BEFORE make_tf_dataset so the cache files exist when
-    training starts. The cache_dir paths must match those passed to
-    make_tf_dataset.
-
-    Parameters
-    ----------
-    train_df  : pd.DataFrame — train split manifest
-    val_df    : pd.DataFrame — val split manifest
-    cache_dir : str or Path  — directory to write cache files
-                               (e.g. Path("/content/tf_cache"))
-    img_size  : int          — must match make_tf_dataset img_size (default: 512)
-
-    Example
-    -------
-    >>> CACHE_DIR = Path("/content/tf_cache")
-    >>> prewarm_cache(train_df, val_df, CACHE_DIR, img_size=IMG_SIZE)
-    >>> train_ds = make_tf_dataset(train_df, split="train", ...,
-    ...                            cache_path=str(CACHE_DIR / "train"))
-    """
     import time
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     for df, name in [(train_df, "train"), (val_df, "val")]:
+        sentinel = cache_dir / f".{name}_cache_ready"
+
+        # Guard — skip if already warmed this session
+        if sentinel.exists():
+            print(f" {name} cache already warm, skipping.")
+            continue
+
         img_paths  = df["image_path"].values
         mask_paths = df["mask_path"].values
 
         ds = (
             tf.data.Dataset.from_tensor_slices((img_paths, mask_paths))
-            .map(
-                _load_image_mask,
-                num_parallel_calls=tf.data.AUTOTUNE
-            )
+            .map(_load_image_mask,   num_parallel_calls=tf.data.AUTOTUNE)
             .map(
                 lambda img, mask: _resize_image_mask(img, mask, img_size),
                 num_parallel_calls=tf.data.AUTOTUNE
             )
-            .cache(str(cache_dir / name))   # write to SSD
-            .batch(32)                      # large batch fine — no model involved
+            .cache(str(cache_dir / name))
+            .batch(32)
             .prefetch(tf.data.AUTOTUNE)
         )
 
@@ -590,8 +567,9 @@ def prewarm_cache(
         print(f"   Done in {elapsed:.1f} min → {cache_dir / name}")
         del ds
 
-    print(" Cache pre-warm complete. All training epochs will now be fast.")
+        sentinel.touch()  # mark as done
 
+    print(" Cache ready.")
 
 def make_tf_dataset(
     df,
