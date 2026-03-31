@@ -469,12 +469,13 @@ def make_tf_dataset(
     img_size   = 512,
     batch_size = 8,
     seed       = SEED,
+    cache_path  = None,
 ) -> tf.data.Dataset:
     """
     Build a tf.data pipeline for segmentation from a CSV manifest DataFrame.
 
     Train augmentation:
-        Random scale (0.5–2.0x) → random crop 512×512 → horizontal flip
+        Random scale (0.75–1.25x) → random crop 512×512 → horizontal flip
         → color jitter (image only)
     Val/Test:
         Direct resize to 512×512, no augmentation.
@@ -521,7 +522,7 @@ def make_tf_dataset(
     # ── Train augmentation ────────────────────────────────────
     def augment(img, mask):
         # 1. Random scale — resize to a random scale between 0.5x and 2.0x
-        scale      = tf.random.uniform([], 0.5, 2.0, seed=seed)
+        scale      = tf.random.uniform([], 0.75, 1.25, seed=seed)
         new_size   = tf.cast(
             tf.round(tf.cast([img_size, img_size], tf.float32) * scale),
             tf.int32
@@ -567,21 +568,27 @@ def make_tf_dataset(
         return img, mask
 
     # ── Build pipeline ────────────────────────────────────────
+
     ds = tf.data.Dataset.from_tensor_slices((img_paths, mask_paths))
 
     if split == "train":
-        ds = ds.shuffle(buffer_size=len(img_paths), seed=seed, reshuffle_each_iteration=True)
+        ds = ds.shuffle(buffer_size=len(img_paths), seed=seed,
+                        reshuffle_each_iteration=True)
 
     ds = ds.map(load, num_parallel_calls=tf.data.AUTOTUNE)
+    ds = ds.map(resize, num_parallel_calls=tf.data.AUTOTUNE)
+
+    if cache_path:
+        ds = ds.cache(cache_path)
 
     if split == "train":
+        ds = ds.shuffle(buffer_size=2048, seed=seed,
+                        reshuffle_each_iteration=True)
         ds = ds.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
-    else:
-        ds = ds.map(resize, num_parallel_calls=tf.data.AUTOTUNE)
 
     ds = ds.map(normalize,  num_parallel_calls=tf.data.AUTOTUNE)
     ds = ds.batch(batch_size, drop_remainder=split == "train")
-    ds = ds.prefetch(tf.data.AUTOTUNE)
+    ds = ds.prefetch(buffer_size=4)
 
     return ds
 
