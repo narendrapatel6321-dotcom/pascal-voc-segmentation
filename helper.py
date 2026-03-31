@@ -572,7 +572,7 @@ def make_tf_dataset(
     ds = tf.data.Dataset.from_tensor_slices((img_paths, mask_paths))
 
     if split == "train":
-        ds = ds.shuffle(buffer_size=500, seed=seed,
+        ds = ds.shuffle(buffer_size=len(img_paths), seed=seed,
                         reshuffle_each_iteration=True)
 
     ds = ds.map(load, num_parallel_calls=tf.data.AUTOTUNE)
@@ -582,7 +582,7 @@ def make_tf_dataset(
         ds = ds.cache(cache_path)
 
     if split == "train":
-        ds = ds.shuffle(buffer_size=2048, seed=seed,
+        ds = ds.shuffle(buffer_size=500, seed=seed,
                         reshuffle_each_iteration=True)
         ds = ds.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
 
