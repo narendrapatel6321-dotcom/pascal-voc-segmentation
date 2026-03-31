@@ -462,6 +462,136 @@ def load_saved_splits(data_dir, local_voc_dir=None, local_sbd_png_dir=None, loca
 IMAGENET_MEAN = tf.constant([0.485, 0.456, 0.406], dtype=tf.float32)
 IMAGENET_STD  = tf.constant([0.229, 0.224, 0.225], dtype=tf.float32)
 
+# ── Shared low-level ops (used by both make_tf_dataset and prewarm_cache) ──
+
+def _load_image_mask(img_path, mask_path):
+    """Read image + mask from disk, decode, cast."""
+    img  = tf.io.read_file(img_path)
+    img  = tf.image.decode_jpeg(img, channels=3)
+    img  = tf.cast(img, tf.float32) / 255.0
+    mask = tf.io.read_file(mask_path)
+    mask = tf.image.decode_png(mask, channels=1)
+    mask = tf.cast(mask, tf.int32)
+    return img, mask
+
+
+def _resize_image_mask(img, mask, img_size):
+    """Resize image (bilinear) and mask (nearest) to img_size×img_size."""
+    img  = tf.image.resize(img,  [img_size, img_size], method="bilinear")
+    mask = tf.image.resize(mask, [img_size, img_size], method="nearest")
+    return img, mask
+
+def _augment(img, mask, img_size):
+    """
+    Train augmentation — random scale crop + flip + color jitter.
+    Scale range 0.75–1.25x keeps resize cost low while preserving
+    meaningful scale variation.
+    """
+    # 1. Random scale + crop
+    scale    = tf.random.uniform([], 0.75, 1.25)
+    new_size = tf.cast(
+        tf.round(tf.cast([img_size, img_size], tf.float32) * scale),
+        tf.int32
+    )
+    new_size = tf.maximum(new_size, img_size)
+
+    img  = tf.image.resize(img,  new_size, method="bilinear")
+    mask = tf.image.resize(mask, new_size, method="nearest")
+
+    # Synchronized crop
+    img_mask = tf.concat([img, tf.cast(mask, tf.float32)], axis=-1)
+    img_mask = tf.image.random_crop(img_mask, size=[img_size, img_size, 4])
+    img  = img_mask[:, :, :3]
+    mask = tf.cast(img_mask[:, :, 3:], tf.int32)
+
+    # 2. Synchronized horizontal flip
+    img_mask = tf.concat([img, tf.cast(mask, tf.float32)], axis=-1)
+    img_mask = tf.image.random_flip_left_right(img_mask)
+    img  = img_mask[:, :, :3]
+    mask = tf.cast(img_mask[:, :, 3:], tf.int32)
+
+    # 3. Color jitter — image only
+    img = tf.image.random_brightness(img, 0.3)
+    img = tf.image.random_contrast(img,   0.7, 1.3)
+    img = tf.image.random_saturation(img, 0.7, 1.3)
+    img = tf.image.random_hue(img,         0.1)
+    img = tf.clip_by_value(img, 0.0, 1.0)
+
+    return img, mask
+
+
+def _normalize(img, mask):
+    """ImageNet mean/std normalization + squeeze mask channel."""
+    img  = (img - IMAGENET_MEAN) / IMAGENET_STD
+    mask = tf.squeeze(mask, axis=-1)
+    return img, mask
+
+
+def prewarm_cache(
+    train_df,
+    val_df,
+    cache_dir,
+    img_size = 512,
+) -> None:
+    """
+    Pre-warm the tf.data disk cache for train and val splits.
+
+    Iterates load → resize → cache for each split WITHOUT augmentation or
+    normalization — those run cheaply every epoch after the cache is warm.
+    Safe to re-run: TF reuses existing cache files if already present.
+
+    Must be called BEFORE make_tf_dataset so the cache files exist when
+    training starts. The cache_dir paths must match those passed to
+    make_tf_dataset.
+
+    Parameters
+    ----------
+    train_df  : pd.DataFrame — train split manifest
+    val_df    : pd.DataFrame — val split manifest
+    cache_dir : str or Path  — directory to write cache files
+                               (e.g. Path("/content/tf_cache"))
+    img_size  : int          — must match make_tf_dataset img_size (default: 512)
+
+    Example
+    -------
+    >>> CACHE_DIR = Path("/content/tf_cache")
+    >>> prewarm_cache(train_df, val_df, CACHE_DIR, img_size=IMG_SIZE)
+    >>> train_ds = make_tf_dataset(train_df, split="train", ...,
+    ...                            cache_path=str(CACHE_DIR / "train"))
+    """
+    import time
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    for df, name in [(train_df, "train"), (val_df, "val")]:
+        img_paths  = df["image_path"].values
+        mask_paths = df["mask_path"].values
+
+        ds = (
+            tf.data.Dataset.from_tensor_slices((img_paths, mask_paths))
+            .map(
+                _load_image_mask,
+                num_parallel_calls=tf.data.AUTOTUNE
+            )
+            .map(
+                lambda img, mask: _resize_image_mask(img, mask, img_size),
+                num_parallel_calls=tf.data.AUTOTUNE
+            )
+            .cache(str(cache_dir / name))   # write to SSD
+            .batch(32)                      # large batch fine — no model involved
+            .prefetch(tf.data.AUTOTUNE)
+        )
+
+        print(f" Pre-warming {name} cache ({len(df):,} images)...")
+        start = time.time()
+        for _ in ds:
+            pass
+        elapsed = (time.time() - start) / 60
+        print(f"   Done in {elapsed:.1f} min → {cache_dir / name}")
+        del ds
+
+    print(" Cache pre-warm complete. All training epochs will now be fast.")
+
 
 def make_tf_dataset(
     df,
@@ -469,16 +599,25 @@ def make_tf_dataset(
     img_size   = 512,
     batch_size = 8,
     seed       = SEED,
-    cache_path  = None,
+    cache_path = None,
 ) -> tf.data.Dataset:
     """
     Build a tf.data pipeline for segmentation from a CSV manifest DataFrame.
 
-    Train augmentation:
+    Pipeline order:
+        Train : shuffle paths → load → resize → cache (optional) →
+                shuffle samples → augment → normalize → batch → prefetch
+        Val   : load → resize → cache (optional) → normalize → batch → prefetch
+        Test  : load → resize → normalize → batch → prefetch
+
+    Augmentation:
         Random scale (0.75–1.25x) → random crop 512×512 → horizontal flip
-        → color jitter (image only)
-    Val/Test:
-        Direct resize to 512×512, no augmentation.
+        → color jitter (image only). Scale capped at 1.25x vs previous 2.0x
+        to keep CPU resize cost low.
+
+    Shuffle strategy:
+        Pre-cache  : shuffles file path strings only — zero RAM cost
+        Post-cache : buffer=500, shuffles decoded samples — ~1.5GB RAM max
 
     All images are normalized with ImageNet mean/std.
     Masks are integer class indices (0–20), void label = 255.
@@ -486,10 +625,14 @@ def make_tf_dataset(
     Parameters
     ----------
     df         : pd.DataFrame with columns image_path, mask_path
-    split      : str — 'train', 'val', or 'test'
-    img_size   : int — output spatial size (default: 512)
-    batch_size : int — batch size (default: 8)
-    seed       : int — random seed for augmentation (default: 21)
+    split      : str            — 'train', 'val', or 'test'
+    img_size   : int            — output spatial size (default: 512)
+    batch_size : int            — batch size (default: 8)
+    seed       : int            — random seed (default: 21)
+    cache_path : str, optional  — path prefix for tf.data disk cache
+                                  (e.g. "/content/tf_cache/train")
+                                  Must match path used in prewarm_cache().
+                                  If None, no caching is applied.
 
     Returns
     -------
@@ -499,99 +642,58 @@ def make_tf_dataset(
 
     Example
     -------
-    >>> train_ds = make_tf_dataset(train_df, split='train', img_size=512, batch_size=8)
-    >>> val_ds   = make_tf_dataset(val_df,   split='val',   img_size=512, batch_size=8)
+    >>> CACHE_DIR = Path("/content/tf_cache")
+    >>> prewarm_cache(train_df, val_df, CACHE_DIR, img_size=IMG_SIZE)
+    >>> train_ds = make_tf_dataset(train_df, split="train", img_size=512,
+    ...                            batch_size=8, cache_path=str(CACHE_DIR/"train"))
+    >>> val_ds   = make_tf_dataset(val_df,   split="val",   img_size=512,
+    ...                            batch_size=8, cache_path=str(CACHE_DIR/"val"))
+    >>> test_ds  = make_tf_dataset(test_df,  split="test",  img_size=512,
+    ...                            batch_size=8)   # no cache needed for test
     """
     img_paths  = df["image_path"].values
     mask_paths = df["mask_path"].values
 
-    # ── Core load function ────────────────────────────────────
-    def load(img_path, mask_path):
-        # Image
-        img  = tf.io.read_file(img_path)
-        img  = tf.image.decode_jpeg(img, channels=3)
-        img  = tf.cast(img, tf.float32) / 255.0
-
-        # Mask — PNG, single channel, class indices
-        mask = tf.io.read_file(mask_path)
-        mask = tf.image.decode_png(mask, channels=1)
-        mask = tf.cast(mask, tf.int32)
-
-        return img, mask
-
-    # ── Train augmentation ────────────────────────────────────
-    def augment(img, mask):
-        # 1. Random scale — resize to a random scale between 0.5x and 2.0x
-        scale      = tf.random.uniform([], 0.75, 1.25, seed=seed)
-        new_size   = tf.cast(
-            tf.round(tf.cast([img_size, img_size], tf.float32) * scale),
-            tf.int32
-        )
-        new_size   = tf.maximum(new_size, img_size)  # never smaller than crop size
-
-        img  = tf.image.resize(img,  new_size, method="bilinear")
-        mask = tf.image.resize(mask, new_size, method="nearest")
-
-        # 2. Synchronized random crop — stack → crop → unstack
-        img_mask   = tf.concat([img, tf.cast(mask, tf.float32)], axis=-1)  # (H, W, 4)
-        img_mask   = tf.image.random_crop(
-            img_mask, size=[img_size, img_size, 4], seed=seed
-        )
-        img  = img_mask[:, :, :3]
-        mask = tf.cast(img_mask[:, :, 3:], tf.int32)
-
-        # 3. Synchronized horizontal flip
-        img_mask = tf.concat([img, tf.cast(mask, tf.float32)], axis=-1)
-        img_mask = tf.image.random_flip_left_right(img_mask, seed=seed)
-        img  = img_mask[:, :, :3]
-        mask = tf.cast(img_mask[:, :, 3:], tf.int32)
-
-        # 4. Color jitter — image only
-        img = tf.image.random_brightness(img, 0.3,        seed=seed)
-        img = tf.image.random_contrast(img,   0.7, 1.3,   seed=seed)
-        img = tf.image.random_saturation(img, 0.7, 1.3,   seed=seed)
-        img = tf.image.random_hue(img,         0.1,       seed=seed)
-        img = tf.clip_by_value(img, 0.0, 1.0)
-
-        return img, mask
-
-    # ── Val/Test resize ───────────────────────────────────────
-    def resize(img, mask):
-        img  = tf.image.resize(img,  [img_size, img_size], method="bilinear")
-        mask = tf.image.resize(mask, [img_size, img_size], method="nearest")
-        return img, mask
-
-    # ── Normalize ─────────────────────────────────────────────
-    def normalize(img, mask):
-        img  = (img - IMAGENET_MEAN) / IMAGENET_STD
-        mask = tf.squeeze(mask, axis=-1)  # (H, W, 1) → (H, W)
-        return img, mask
-
-    # ── Build pipeline ────────────────────────────────────────
-
     ds = tf.data.Dataset.from_tensor_slices((img_paths, mask_paths))
 
+    # Pre-cache shuffle — operates on path strings only, zero RAM cost
     if split == "train":
-        ds = ds.shuffle(buffer_size=len(img_paths), seed=seed,
-                        reshuffle_each_iteration=True)
+        ds = ds.shuffle(
+            buffer_size           = len(img_paths),
+            seed                  = seed,
+            reshuffle_each_iteration = True
+        )
 
-    ds = ds.map(load, num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.map(resize, num_parallel_calls=tf.data.AUTOTUNE)
+    # Load + resize
+    ds = ds.map(_load_image_mask, num_parallel_calls=tf.data.AUTOTUNE)
+    ds = ds.map(
+        lambda img, mask: _resize_image_mask(img, mask, img_size),
+        num_parallel_calls=tf.data.AUTOTUNE
+    )
 
+    # Cache to SSD — reads from disk happen only on first epoch
     if cache_path:
         ds = ds.cache(cache_path)
 
+    # Post-cache: re-shuffle decoded samples (small buffer — RAM safe)
+    # then augment. Val/test skip both.
     if split == "train":
-        ds = ds.shuffle(buffer_size=500, seed=seed,
-                        reshuffle_each_iteration=True)
-        ds = ds.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
+        ds = ds.shuffle(
+            buffer_size           = 500,
+            seed                  = seed,
+            reshuffle_each_iteration = True
+        )
+        ds = ds.map(
+            lambda img, mask: _augment(img, mask, img_size),
+            num_parallel_calls=tf.data.AUTOTUNE
+        )
 
-    ds = ds.map(normalize,  num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.batch(batch_size, drop_remainder=split == "train")
+    ds = ds.map(_normalize, num_parallel_calls=tf.data.AUTOTUNE)
+    ds = ds.batch(batch_size, drop_remainder=(split == "train"))
     ds = ds.prefetch(buffer_size=4)
 
     return ds
-
+  
 # ─────────────────────────────────────────────
 # 3. Losses
 # ─────────────────────────────────────────────
