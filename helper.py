@@ -668,7 +668,7 @@ def make_tf_dataset(
 
     ds = ds.map(_normalize, num_parallel_calls=tf.data.AUTOTUNE)
     ds = ds.batch(batch_size, drop_remainder=(split == "train"))
-    ds = ds.prefetch(buffer_size=4)
+    ds = ds.prefetch(buffer_size=tf.data.AUTOTUNE)
 
     return ds
   
