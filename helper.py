@@ -26,6 +26,8 @@ Sections
     PixelAccuracy                — pixel accuracy, void-aware
     MeanIoU                      — confusion-matrix-based mIoU, void-aware
     MeanDice                     — confusion-matrix-based mean Dice, void-aware
+    RareClassIoU                 — IoU restricted to rare classes
+    CompositeScore               — weighted mIoU + MeanDice + RareClassIoU
 
 5. Visualization — Data Inspection
     plot_sample_pairs()          — image + mask pairs from dataset
@@ -246,6 +248,9 @@ VOC_CLASSES = [
     "bus", "car", "cat", "chair", "cow", "diningtable", "dog", "horse",
     "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"
 ]
+
+# boat=4, bottle=5, cow=10, pottedplant=16, sheep=17, tvmonitor=20
+RARE_CLASS_INDICES = [4, 5, 10, 16, 17, 20]
 
 def _convert_sbd_mat_to_png(sbd_msk_dir, png_dir) -> None:
     """
@@ -976,7 +981,77 @@ class MeanDice(tf.keras.metrics.Metric):
         config = super().get_config()
         config.update({"num_classes": self.num_classes})
         return config
-    
+
+
+@tf.keras.utils.register_keras_serializable(package="voc_seg")
+class RareClassIoU(tf.keras.metrics.Metric):
+    def __init__(self, rare_indices=RARE_CLASS_INDICES, num_classes=NUM_CLASSES, name="rare_class_iou", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.rare_indices = rare_indices
+        self.num_classes  = num_classes
+        self.confusion    = self.add_weight(
+            name="confusion", shape=(num_classes, num_classes), initializer="zeros"
+        )
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_true = tf.cast(y_true, tf.int32)
+        pred   = tf.argmax(y_pred, axis=-1, output_type=tf.int32)
+        valid  = tf.not_equal(y_true, VOID_LABEL)
+        y_true_flat = tf.boolean_mask(y_true, valid)
+        pred_flat   = tf.boolean_mask(pred,   valid)
+        indices = tf.stack([y_true_flat, pred_flat], axis=1)
+        updates = tf.ones(tf.shape(y_true_flat)[0], dtype=tf.float32)
+        cm      = tf.tensor_scatter_nd_add(
+            tf.zeros((self.num_classes, self.num_classes), dtype=tf.float32),
+            indices, updates
+        )
+        self.confusion.assign_add(cm)
+
+    def result(self):
+        tp  = tf.linalg.diag_part(self.confusion)
+        fp  = tf.reduce_sum(self.confusion, axis=0) - tp
+        fn  = tf.reduce_sum(self.confusion, axis=1) - tp
+        iou = tf.math.divide_no_nan(tp, tp + fp + fn)
+        rare_iou = tf.gather(iou, self.rare_indices)
+        rare_present = tf.gather(tf.reduce_sum(self.confusion, axis=1) > 0, self.rare_indices)
+        rare_iou = tf.where(rare_present, rare_iou, tf.zeros_like(rare_iou))
+        return tf.math.divide_no_nan(
+            tf.reduce_sum(rare_iou),
+            tf.cast(tf.reduce_sum(tf.cast(rare_present, tf.int32)), tf.float32)
+        )
+
+    def reset_state(self):
+        self.confusion.assign(tf.zeros((self.num_classes, self.num_classes)))
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"rare_indices": self.rare_indices, "num_classes": self.num_classes})
+        return config 
+
+@tf.keras.utils.register_keras_serializable(package="voc_seg")
+class CompositeScore(tf.keras.metrics.Metric):
+    def __init__(self, rare_indices=RARE_CLASS_INDICES, num_classes=NUM_CLASSES, name="composite_score", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self._miou  = MeanIoU(num_classes=num_classes)
+        self._dice  = MeanDice(num_classes=num_classes)
+        self._rare  = RareClassIoU(rare_indices=rare_indices, num_classes=num_classes)
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        self._miou.update_state(y_true, y_pred)
+        self._dice.update_state(y_true, y_pred)
+        self._rare.update_state(y_true, y_pred)
+
+    def result(self):
+        return 0.40 * self._miou.result() + 0.20 * self._dice.result() + 0.40 * self._rare.result()
+
+    def reset_state(self):
+        self._miou.reset_state()
+        self._dice.reset_state()
+        self._rare.reset_state()
+
+    def get_config(self):
+        return super().get_config()
+        
 # ─────────────────────────────────────────────
 # 5. Visualization — Data Inspection
 # ─────────────────────────────────────────────
