@@ -503,19 +503,14 @@ def _augment(img, mask, img_size):
     img  = tf.image.resize(img,  new_size, method="bilinear")
     mask = tf.image.resize(mask, new_size, method="nearest")
 
-    # Synchronized crop
+   # Synchronized crop + flip in one concat/split pass
     img_mask = tf.concat([img, tf.cast(mask, tf.float32)], axis=-1)
     img_mask = tf.image.random_crop(img_mask, size=[img_size, img_size, 4])
-    img  = img_mask[:, :, :3]
-    mask = tf.cast(img_mask[:, :, 3:], tf.int32)
-
-    # 2. Synchronized horizontal flip
-    img_mask = tf.concat([img, tf.cast(mask, tf.float32)], axis=-1)
     img_mask = tf.image.random_flip_left_right(img_mask)
     img  = img_mask[:, :, :3]
     mask = tf.cast(img_mask[:, :, 3:], tf.int32)
 
-    # 3. Color jitter — image only
+    # Color jitter — image only
     img = tf.image.random_brightness(img, 0.3)
     img = tf.image.random_contrast(img,   0.7, 1.3)
     img = tf.image.random_saturation(img, 0.7, 1.3)
@@ -1362,7 +1357,7 @@ def plot_training_curve(csv_path, save_path=None) -> None:
     best_loss_epoch = epochs[df[val_loss_col].idxmin()]
     ax.axvline(best_loss_epoch, color="#DD8452", linestyle="--", linewidth=1, alpha=0.7)
     ax.text(
-        best_loss_epoch + 0.3, ax.get_ylim()[1] * 0.95,
+        best_loss_epoch + 0.3, df[val_loss_col].min() * 1.05,
         f"best epoch {best_loss_epoch}",
         color="#DD8452", fontsize=8
     )
@@ -1383,7 +1378,7 @@ def plot_training_curve(csv_path, save_path=None) -> None:
         best_miou_epoch = epochs[df[val_miou_col].idxmax()]
         ax.axvline(best_miou_epoch, color="#DD8452", linestyle="--", linewidth=1, alpha=0.7)
         ax.text(
-            best_miou_epoch + 0.3, ax.get_ylim()[0] + (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.05,
+            best_miou_epoch + 0.3, df[val_miou_col].min() * 1.02,
             f"best epoch {best_miou_epoch}",
             color="#DD8452", fontsize=8
         )
@@ -1432,7 +1427,7 @@ def get_predictions(model, dataset) -> tuple:
     for img_batch, mask_batch in dataset:
         logits = model(img_batch, training=False)           # (B, H, W, C)
         preds  = tf.argmax(logits, axis=-1, output_type=tf.int32)  # (B, H, W)
-        y_true_list.append(mask_batch.numpy())
+        y_true_list.append(mask_batch.numpy().astype(np.int32))
         y_pred_list.append(preds.numpy())
 
     y_true = np.concatenate(y_true_list, axis=0)           # (N, H, W)
