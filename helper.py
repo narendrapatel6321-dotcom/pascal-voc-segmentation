@@ -1456,7 +1456,7 @@ def plot_confusion_matrix(y_true, y_pred, save_path=None) -> None:
     -------
     >>> plot_confusion_matrix(y_true, y_pred, save_path=PLOTS_DIR / "confusion_matrix.png")
     """
-    valid = y_true != VOID_LABEL
+    valid = (y_true >= 0) & (y_true < NUM_CLASSES)
 
     y_true_flat = y_true[valid]
     y_pred_flat = y_pred[valid]
@@ -1526,7 +1526,7 @@ def plot_per_class_iou(y_true, y_pred, save_path=None) -> None:
     -------
     >>> plot_per_class_iou(y_true, y_pred, save_path=PLOTS_DIR / "per_class_iou.png")
     """
-    valid       = y_true != VOID_LABEL
+    valid = (y_true >= 0) & (y_true < NUM_CLASSES)
     y_true_flat = y_true[valid]
     y_pred_flat = y_pred[valid]
 
