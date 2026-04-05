@@ -1032,25 +1032,56 @@ class RareClassIoU(tf.keras.metrics.Metric):
 class CompositeScore(tf.keras.metrics.Metric):
     def __init__(self, rare_indices=RARE_CLASS_INDICES, num_classes=NUM_CLASSES, name="composite_score", **kwargs):
         super().__init__(name=name, **kwargs)
-        self._miou  = MeanIoU(num_classes=num_classes)
-        self._dice  = MeanDice(num_classes=num_classes)
-        self._rare  = RareClassIoU(rare_indices=rare_indices, num_classes=num_classes)
+        self.rare_indices = rare_indices
+        self.num_classes  = num_classes
+        self.confusion    = self.add_weight(
+            name        = "confusion",
+            shape       = (num_classes, num_classes),
+            initializer = "zeros"
+        )
 
     def update_state(self, y_true, y_pred, sample_weight=None):
-        self._miou.update_state(y_true, y_pred)
-        self._dice.update_state(y_true, y_pred)
-        self._rare.update_state(y_true, y_pred)
+        y_true = tf.cast(y_true, tf.int32)
+        pred   = tf.argmax(y_pred, axis=-1, output_type=tf.int32)
+        valid  = tf.not_equal(y_true, VOID_LABEL)
+        y_true_flat = tf.boolean_mask(y_true, valid)
+        pred_flat   = tf.boolean_mask(pred,   valid)
+        indices = tf.stack([y_true_flat, pred_flat], axis=1)
+        updates = tf.ones(tf.shape(y_true_flat)[0], dtype=tf.float32)
+        cm      = tf.tensor_scatter_nd_add(
+            tf.zeros((self.num_classes, self.num_classes), dtype=tf.float32),
+            indices, updates
+        )
+        self.confusion.assign_add(cm)
 
     def result(self):
-        return 0.40 * self._miou.result() + 0.20 * self._dice.result() + 0.40 * self._rare.result()
+        tp  = tf.linalg.diag_part(self.confusion)
+        fp  = tf.reduce_sum(self.confusion, axis=0) - tp
+        fn  = tf.reduce_sum(self.confusion, axis=1) - tp
+        iou = tf.math.divide_no_nan(tp, tp + fp + fn)
+        dice = tf.math.divide_no_nan(2.0 * tp, 2.0 * tp + fp + fn)
+
+        valid_cls    = tf.reduce_sum(self.confusion, axis=1) > 0
+        valid_count  = tf.cast(tf.reduce_sum(tf.cast(valid_cls, tf.int32)), tf.float32)
+
+        miou  = tf.math.divide_no_nan(tf.reduce_sum(tf.where(valid_cls, iou,  tf.zeros_like(iou))),  valid_count)
+        mdice = tf.math.divide_no_nan(tf.reduce_sum(tf.where(valid_cls, dice, tf.zeros_like(dice))), valid_count)
+
+        rare_present = tf.gather(valid_cls, self.rare_indices)
+        rare_iou     = tf.gather(iou, self.rare_indices)
+        rare_iou     = tf.where(rare_present, rare_iou, tf.zeros_like(rare_iou))
+        rare_count   = tf.cast(tf.reduce_sum(tf.cast(rare_present, tf.int32)), tf.float32)
+        rare         = tf.math.divide_no_nan(tf.reduce_sum(rare_iou), rare_count)
+
+        return 0.40 * miou + 0.20 * mdice + 0.40 * rare
 
     def reset_state(self):
-        self._miou.reset_state()
-        self._dice.reset_state()
-        self._rare.reset_state()
+        self.confusion.assign(tf.zeros((self.num_classes, self.num_classes)))
 
     def get_config(self):
-        return super().get_config()
+        config = super().get_config()
+        config.update({"rare_indices": self.rare_indices, "num_classes": self.num_classes})
+        return config
         
 # ─────────────────────────────────────────────
 # 5. Visualization — Data Inspection
