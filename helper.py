@@ -469,14 +469,19 @@ IMAGENET_STD  = tf.constant([0.229, 0.224, 0.225], dtype=tf.float32)
 
 # ── Shared low-level ops (used by both make_tf_dataset and prewarm_cache) ──
 
+def _read_mask_pil(path):
+    mask = np.array(Image.open(path.numpy().decode("utf-8")))
+    return mask.astype(np.int32)
+
 def _load_image_mask(img_path, mask_path):
     """Read image + mask from disk, decode, cast."""
     img  = tf.io.read_file(img_path)
     img  = tf.image.decode_jpeg(img, channels=3)
     img  = tf.cast(img, tf.float32) / 255.0
-    mask = tf.io.read_file(mask_path)
-    mask = tf.image.decode_png(mask, channels=0)
-    mask = tf.cast(mask, tf.int32)
+
+    mask = tf.py_function(_read_mask_pil, [mask_path], tf.int32)
+    mask.set_shape([None, None])
+    mask = tf.expand_dims(mask, axis=-1)
     return img, mask
 
 
@@ -508,7 +513,7 @@ def _augment(img, mask, img_size):
     img_mask = tf.image.random_crop(img_mask, size=[img_size, img_size, 4])
     img_mask = tf.image.random_flip_left_right(img_mask)
     img  = img_mask[:, :, :3]
-    mask = tf.cast(img_mask[:, :, 3:], tf.int32)
+    mask = tf.cast(img_mask[:, :, 3:4], tf.int32)
 
     # Color jitter — image only
     img = tf.image.random_brightness(img, 0.3)
