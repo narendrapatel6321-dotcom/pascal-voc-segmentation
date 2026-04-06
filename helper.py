@@ -475,7 +475,7 @@ def _load_image_mask(img_path, mask_path):
     img  = tf.image.decode_jpeg(img, channels=3)
     img  = tf.cast(img, tf.float32) / 255.0
     mask = tf.io.read_file(mask_path)
-    mask = tf.image.decode_png(mask, channels=1)
+    mask = tf.image.decode_png(mask, channels=0)
     mask = tf.cast(mask, tf.int32)
     return img, mask
 
